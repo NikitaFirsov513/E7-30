@@ -1,375 +1,304 @@
 #include "ui.h"
-#include <sstream>
-#include <iomanip>
-#include <windows.h>
-#include <vector>
+
+#include "imgui.h"
+
+#include <Windows.h>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cfloat>
+#include <cstdio>
 #include <string>
-#include <setupapi.h>
-#include <devguid.h>
-#include <regstr.h>
+#include <vector>
 
-#include <iostream>
-
-
-#pragma comment(lib, "setupapi.lib")
+namespace {
 
 std::vector<std::string> enumerateComPorts() {
-	std::vector<std::string> comPorts;
-
-	for (int i = 1; i <= 256; ++i) {
-		std::string portName = "COM" + std::to_string(i);
-		std::string fullName = "\\\\.\\" + portName;
-
-		HANDLE hPort = CreateFileA(fullName.c_str(),
-			GENERIC_READ | GENERIC_WRITE,
-			0, nullptr, OPEN_EXISTING,
-			0, nullptr);
-
-		if (hPort != INVALID_HANDLE_VALUE) {
-			comPorts.push_back(portName);
-			CloseHandle(hPort);
-		}
-		else {
-			// �������� ������ � ���� ���� �����, �� ����� ������� (�� ����������)
-			if (GetLastError() == ERROR_ACCESS_DENIED) {
-				comPorts.push_back(portName);
-			}
-		}
-	}
-
-	return comPorts;
+    std::vector<std::string> ports{"EMULATOR"};
+    for (int number = 1; number <= 256; ++number) {
+        const std::string name = "COM" + std::to_string(number);
+        std::array<char, 512> target{};
+        if (QueryDosDeviceA(name.c_str(), target.data(), static_cast<DWORD>(target.size())) != 0U) {
+            ports.push_back(name);
+        }
+    }
+    return ports;
 }
 
-void TextCentered(std::string text, int numHeightUnits) {
-
-	auto windowWidth = ImGui::GetWindowSize().x;
-	auto textWidth = ImGui::CalcTextSize(text.c_str()).x;
-	float frameHeight = ImGui::GetFrameHeight();
-	float myHeight = (numHeightUnits);
-	float delta = myHeight - frameHeight;
-	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 20.0f);
-	ImGui::SetCursorPosY(ImGui::GetCursorPosY() + delta * 0.5f);
-	ImGui::Text(text.c_str());
-
+const char* stateText(DeviceState state) {
+    switch (state) {
+    case DeviceState::CONNECTED: return "Подключён";
+    case DeviceState::RECORDING: return "Регистрация";
+    case DeviceState::ERR: return "Ошибка";
+    case DeviceState::DISCONNECTED: return "Отключён";
+    }
+    return "Неизвестно";
 }
 
-static std::string formatSmartFloat(double value, int precision = 6)
-{
-	std::ostringstream ss;
-
-	double absVal = std::fabs(value);
-	// ���� ����� ����� ��������� (<0.001) ��� ����� ������� (>1e6),
-	// ���������� � ���������������� �����
-	if ((absVal > 0 && absVal < 1e-3) || absVal >= 1e6)
-		ss << std::scientific << std::setprecision(precision);
-	else
-		ss << std::fixed << std::setprecision(precision);
-
-	ss << value;
-	return ss.str();
+ImVec4 stateColor(DeviceState state) {
+    switch (state) {
+    case DeviceState::CONNECTED: return {0.2F, 0.8F, 0.2F, 1.0F};
+    case DeviceState::RECORDING: return {0.2F, 0.6F, 1.0F, 1.0F};
+    case DeviceState::ERR: return {1.0F, 0.2F, 0.2F, 1.0F};
+    case DeviceState::DISCONNECTED: return {0.6F, 0.6F, 0.6F, 1.0F};
+    }
+    return {0.6F, 0.6F, 0.6F, 1.0F};
 }
 
-UI::~UI()
-{
-
-
+std::string utcText(std::chrono::system_clock::time_point time) {
+    return time.time_since_epoch().count() == 0 ? "—" : DataStore::utcMilliseconds(time);
 }
 
-void UI::ShowDeviceControlWindow()
-{
-	DeviceStatus status = deviceCommunicator->getLastData();
-
-	ImGui::Begin("E7-30 Control");
-
-	// --- Device state ---
-	ImVec4 color;
-	const char* stateText = "";
-
-	switch (status.state) {
-	case DeviceState::CONNECTED:
-		color = ImVec4(0.2f, 0.8f, 0.2f, 1.0f); // ������
-		stateText = "Connected";
-		break;
-	case DeviceState::RECORDING:
-		color = ImVec4(0.2f, 0.6f, 1.0f, 1.0f); // �������
-		stateText = "Recording";
-		break;
-	case DeviceState::ERR:
-		color = ImVec4(1.0f, 0.2f, 0.2f, 1.0f); // �������
-		stateText = "Error";
-		break;
-	case DeviceState::DISCONNECTED:
-	default:
-		color = ImVec4(0.6f, 0.6f, 0.6f, 1.0f); // �����
-		stateText = "Disconnected";
-		break;
-	}
-
-	ImGui::TextColored(color, "State: %s", stateText);
-
-	ImGui::Separator();
-
-	// --- AVP control ---
-	if (ImGui::Button("Enable AVP")) {
-		//deviceCommunicator->sendCommand({ 0xAA, 65 });
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Disable AVP")) {
-		//deviceCommunicator->sendCommand({ 0xAA, 66 });
-	}
-
-	ImGui::Separator();
-
-	// --- Frequency input ---
-	static int frequencyHz = 1000;
-	ImGui::InputInt("Frequency (Hz)", &frequencyHz);
-	if (ImGui::Button("Set Frequency")) {
-		//deviceCommunicator->setFrequency(static_cast<uint32_t>(frequencyHz));
-		uint32_t freq = static_cast<uint32_t>(frequencyHz);
-		std::vector<uint8_t> cmd = {
-			0xAA, 67,
-			static_cast<uint8_t>((freq >> 24) & 0xFF),
-			static_cast<uint8_t>((freq >> 16) & 0xFF),
-			static_cast<uint8_t>((freq >> 8) & 0xFF),
-			static_cast<uint8_t>(freq & 0xFF)
-		};
-		deviceCommunicator->sendCommand(cmd);
-	}
-
-	// --- Frequency input ---
-	static int status_interval = 1;
-	ImGui::InputInt("Status interval (Sec)", &status_interval);
-
-	if (status_interval < 1)
-		status_interval = 1;
-
-	if (ImGui::Button("Set status interval")) {
-		deviceCommunicator->setStatusInterval(status_interval);
-	}
-
-
-
-	ImGui::Separator();
-
-	// --- Reset ---
-	if (ImGui::Button("Reset to Default")) {
-		deviceCommunicator->sendCommand({ 0xAA, 71 });
-	}
-
-	/*ImGui::Separator();
-
-	// --- Measurement info ---
-	if (ImGui::Button("Get Measurement Info")) {
-		deviceCommunicator->sendCommand({ 0xAA, 72, 0x00 });
-	}*/
-
-	ImGui::Separator();
-
-	// --- Parameter selection for plotting ---
-
-
-	// --- Data history for plotting ---
-	constexpr int MAX_HISTORY = 500;
-	static std::vector<float> historyZ, historyPhi;
-
-	if (status.state == DeviceState::CONNECTED || status.state == DeviceState::RECORDING) {
-		historyZ.push_back(status.lastDeviceResponce.Z);
-		historyPhi.push_back(status.lastDeviceResponce.phi * 57.2958f);
-
-
-		if (historyZ.size() > MAX_HISTORY) {
-			historyZ.erase(historyZ.begin());
-			historyPhi.erase(historyPhi.begin());
-
-		}
-	}
-
-	// --- Textual output of last parameters with checkboxes ---
-	ImGui::Text("Last Measurement:");
-
-	static bool showZ = true;
-	static bool showPhi = false;
-	static bool showRs = false;
-	static bool showXs = false;
-	static bool showRp = false;
-	static bool showXp = false;
-
-	if (ImGui::Checkbox("##chkZ", &showZ)) {}
-	ImGui::SameLine();
-	ImGui::Text("Z   = %s Ohm", formatSmartFloat(status.lastDeviceResponce.Z).c_str());
-
-	if (ImGui::Checkbox("##chkPhi", &showPhi)) {}
-	ImGui::SameLine();
-	ImGui::Text("Phi = %s deg", formatSmartFloat(status.lastDeviceResponce.phi * 57.2958f).c_str());
-
-
-
-	ImGui::Text("Frequency = %d Hz", status.lastDeviceResponce.frequency);
-
-	// --- Plotting ---
-	if (showZ && !historyZ.empty())
-		ImGui::PlotLines("Z", historyZ.data(), (int)historyZ.size(), 0, nullptr, FLT_MAX, FLT_MAX, ImVec2(0, 80));
-	if (showPhi && !historyPhi.empty())
-		ImGui::PlotLines("Phi", historyPhi.data(), (int)historyPhi.size(), 0, nullptr, FLT_MAX, FLT_MAX, ImVec2(0, 80));
-
-
-	// --- Error output ---
-	if (!status.lastError.empty()) {
-		ImGui::TextColored(ImVec4(1, 0, 0, 1), "Error: %s", status.lastError.c_str());
-	}
-
-	ImGui::End();
+void optionalInput(const char* label, bool& enabled, double& value) {
+    ImGui::Checkbox((std::string("##") + label).c_str(), &enabled);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!enabled);
+    ImGui::InputDouble(label, &value, 0.0, 0.0, "%.3f");
+    ImGui::EndDisabled();
 }
 
-void UI::ShowMainDockspace()
-{
+} // namespace
 
-	static bool showPortDialog = false;
-	static int selectedPortIndex = -1;
-	static std::vector<std::string> portList = enumerateComPorts();
-
-	ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
-
-	const ImGuiViewport* viewport = ImGui::GetMainViewport();
-	ImGui::SetNextWindowPos(viewport->WorkPos);
-	ImGui::SetNextWindowSize(viewport->WorkSize);
-	ImGui::SetNextWindowViewport(viewport->ID);
-
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-
-	window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
-		ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-		ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
-
-	ImGui::Begin("MainDockSpace", nullptr, window_flags);
-	ImGui::PopStyleVar(2);
-
-	// ����-���
-	if (ImGui::BeginMenuBar())
-	{
-		if (ImGui::BeginMenu("File"))
-		{
-
-			switch (deviceCommunicator->getDeviseState()) {
-			case DeviceState::CONNECTED:
-				if (ImGui::MenuItem("Start record")) {
-					deviceCommunicator->start();
-				}
-				if (ImGui::MenuItem("Stop record", nullptr, false, false)) {}
-				break;
-			case DeviceState::RECORDING:
-				if (ImGui::MenuItem("Start record", nullptr, false, false)) {}
-				if (ImGui::MenuItem("Stop record")) {
-					deviceCommunicator->stop();
-				}
-				break;
-			case DeviceState::ERR:
-				if (ImGui::MenuItem("Start record", nullptr, false, false)) {}
-				if (ImGui::MenuItem("Stop record", nullptr, false, false)) {}
-				break;
-			case DeviceState::DISCONNECTED:
-				if (ImGui::MenuItem("Connected")) {
-
-					portList = enumerateComPorts(); // �����������
-					selectedPortIndex = (int)portList.size() > 0 ? 0 : -1;
-					showPortDialog = true;
-					//deviceCommunicator->tryConnect("COM8");
-				}
-				if (ImGui::MenuItem("Start record", nullptr, false, false)) {}
-				if (ImGui::MenuItem("Stop record", nullptr, false, false)) {}
-				break;
-			default:
-				break;
-			}
-			if (ImGui::MenuItem("Save")) { /* TODO */ }
-			if (ImGui::MenuItem("Exit")) { /* TODO: set running = false, etc */ }
-			ImGui::EndMenu();
-		}
-
-		if (ImGui::BeginMenu("Edit"))
-		{
-			if (ImGui::MenuItem("Undo", "Ctrl+Z")) { /* TODO */ }
-			if (ImGui::MenuItem("Redo", "Ctrl+Y")) { /* TODO */ }
-			ImGui::Separator();
-			if (ImGui::MenuItem("Cut", "Ctrl+X")) { /* TODO */ }
-			if (ImGui::MenuItem("Copy", "Ctrl+C")) { /* TODO */ }
-			if (ImGui::MenuItem("Paste", "Ctrl+V")) { /* TODO */ }
-			ImGui::EndMenu();
-		}
-
-		if (ImGui::BeginMenu("Help"))
-		{
-			if (ImGui::MenuItem("About")) { /* TODO */ }
-			ImGui::EndMenu();
-		}
-
-		ImGui::EndMenuBar();
-	}
-
-	if (showPortDialog) {
-		ImGui::OpenPopup("Select COM Port");
-		showPortDialog = false;
-	}
-
-	if (ImGui::BeginPopupModal("Select COM Port", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-	{
-		ImGui::Text("Choose a serial port:");
-		if (!portList.empty()) {
-			ImGui::Combo("Ports", &selectedPortIndex,
-				[](void* data, int idx, const char** out) {
-					auto& v = *static_cast<std::vector<std::string>*>(data);
-					*out = v[idx].c_str();
-					return true;
-				}, &portList, (int)portList.size(), 5);
-		}
-		else {
-			ImGui::TextColored(ImVec4(1, 0, 0, 1), "No ports found");
-		}
-
-		ImGui::Separator();
-		if (ImGui::Button("OK", ImVec2(120, 0))) {
-			if (selectedPortIndex >= 0) {
-				std::string portName = portList[selectedPortIndex];
-				// �� ������ ���� "COM3 � USB Serial Port" ������� ��� COM?
-				// ����� ����� �� ������� ��� � � �
-				std::string extracted = portName.substr(0, portName.find(" "));
-				if (!deviceCommunicator->tryConnect(extracted)) {
-					ImGui::OpenPopup("Connection Failed");
-				}
-				else {
-					ImGui::CloseCurrentPopup();
-				}
-			}
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-			ImGui::CloseCurrentPopup();
-		}
-
-		if (ImGui::BeginPopup("Connection Failed")) {
-			ImGui::TextColored(ImVec4(1, 0, 0, 1), "Failed to open port: %s",
-				selectedPortIndex >= 0 ? portList[selectedPortIndex].c_str() : "");
-			if (ImGui::Button("Close")) {
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::EndPopup();
-		}
-
-		ImGui::EndPopup();
-	}
-
-	// Dockspace
-	ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
-	ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
-
-	ImGui::End();
-
-
+void UI::updateHistory(const DeviceResponse& response) {
+    if (response.sequenceId == 0 || response.sequenceId == lastPlottedSequence_) return;
+    lastPlottedSequence_ = response.sequenceId;
+    if (!response.valid) return;
+    if (plottedFrequency_ != response.returnedFrequency) {
+        history_.clear();
+        plottedFrequency_ = response.returnedFrequency;
+    }
+    history_.push_back({response.timestamp, response.value1, response.value2});
+    while (history_.size() > kMaxHistory) history_.pop_front();
 }
 
-void UI::Render()
-{
-	ShowMainDockspace();
-	ShowDeviceControlWindow();
+void UI::plotHistory(const char* label, bool secondValue) {
+    if (history_.empty()) return;
+    const ImVec2 size{ImGui::GetContentRegionAvail().x, 110.0F};
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(label, size);
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->AddRect(origin, {origin.x + size.x, origin.y + size.y}, IM_COL32(110, 110, 110, 255));
+    float minimum = FLT_MAX;
+    float maximum = -FLT_MAX;
+    for (const auto& point : history_) {
+        const float value = secondValue ? point.value2 : point.value1;
+        minimum = std::min(minimum, value);
+        maximum = std::max(maximum, value);
+    }
+    if (maximum <= minimum) maximum = minimum + 1.0F;
+    const auto first = history_.front().time;
+    const auto last = history_.back().time;
+    const double span = std::max(0.001, std::chrono::duration<double>(last - first).count());
+    ImVec2 previous{};
+    bool havePrevious = false;
+    for (const auto& point : history_) {
+        const double elapsed = std::chrono::duration<double>(point.time - first).count();
+        const float value = secondValue ? point.value2 : point.value1;
+        const ImVec2 current{
+            origin.x + static_cast<float>(elapsed / span) * size.x,
+            origin.y + size.y - ((value - minimum) / (maximum - minimum)) * size.y};
+        if (havePrevious) draw->AddLine(previous, current, IM_COL32(80, 190, 255, 255), 1.5F);
+        previous = current;
+        havePrevious = true;
+    }
+    ImGui::Text("%s — %s", utcText(first).c_str(), utcText(last).c_str());
+}
+
+void UI::ShowDeviceControlWindow() {
+    const DeviceStatus status = deviceCommunicator_->getLastData();
+    updateHistory(status.lastDeviceResponse);
+    ImGui::Begin("Е7-30 — измерения");
+    ImGui::TextColored(stateColor(status.state), "Связь: %s", stateText(status.state));
+    const std::string responseTime = utcText(status.lastSuccessfulResponse);
+    ImGui::Text("Последний успешный ответ: %s", responseTime.c_str());
+    ImGui::Text("Sequence ID: %llu", static_cast<unsigned long long>(status.lastDeviceResponse.sequenceId));
+    ImGui::Text("Частота: запрошено %u Гц, получено %d Гц",
+                status.lastDeviceResponse.requestedFrequency,
+                status.lastDeviceResponse.returnedFrequency);
+    ImGui::Text("Режим: %u, диапазон: %u", status.lastDeviceResponse.mode,
+                status.lastDeviceResponse.range);
+    ImGui::Text("Готово: %s | Перегрузка: %s | Достоверно: %s",
+                status.lastDeviceResponse.done ? "да" : "нет",
+                status.lastDeviceResponse.overload ? "да" : "нет",
+                status.lastDeviceResponse.valid ? "да" : "нет");
+    ImGui::Text("Значение 1: %.7g", status.lastDeviceResponse.value1);
+    ImGui::Text("Значение 2: %.7g", status.lastDeviceResponse.value2);
+    ImGui::TextDisabled("Единицы и смысл двух значений зависят от режима и требуют документации.");
+
+    static int frequencyHz = 1000;
+    ImGui::InputInt("Заданная частота, Гц", &frequencyHz);
+    frequencyHz = std::clamp(frequencyHz, 25, 3000000);
+    if (ImGui::Button("Установить частоту")) {
+        deviceCommunicator_->setFrequency(static_cast<std::uint32_t>(frequencyHz));
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Сброс прибора")) deviceCommunicator_->resetDevice();
+    static int intervalSeconds = 1;
+    ImGui::InputInt("Интервал опроса, с", &intervalSeconds);
+    if (intervalSeconds < 1) intervalSeconds = 1;
+    if (ImGui::Button("Применить интервал")) deviceCommunicator_->setStatusInterval(intervalSeconds);
+
+    if (!history_.empty()) {
+        ImGui::Separator();
+        ImGui::Text("Графики одной частоты: %d Гц", plottedFrequency_);
+        plotHistory("##value1", false);
+        plotHistory("##value2", true);
+    }
+    if (!status.lastDeviceResponse.diagnostic.empty()) {
+        ImGui::TextWrapped("Диагностика: %s", status.lastDeviceResponse.diagnostic.c_str());
+    }
+    if (!status.lastError.empty()) {
+        ImGui::TextColored({1, 0.2F, 0.2F, 1}, "Ошибка: %s", status.lastError.c_str());
+    }
+    ImGui::End();
+}
+
+void UI::ShowExperimentWindow() {
+    ImGui::Begin("Эксперимент / варка");
+    const auto active = deviceCommunicator_->activeExperimentId();
+    ImGui::Text("Активный эксперимент: %lld", static_cast<long long>(active));
+    static std::array<char, 128> resin{};
+    static std::array<char, 128> recipe{};
+    static std::array<char, 128> reactor{};
+    static std::array<char, 128> sensor{};
+    static std::array<char, 128> serial{};
+    static std::array<char, 128> operatorName{};
+    static std::array<char, 512> notes{};
+    if (active == 0) {
+        ImGui::InputText("Марка смолы", resin.data(), resin.size());
+        ImGui::InputText("Версия рецептуры", recipe.data(), recipe.size());
+        ImGui::InputText("Реактор", reactor.data(), reactor.size());
+        ImGui::InputText("Датчик", sensor.data(), sensor.size());
+        ImGui::InputText("Серийный номер прибора", serial.data(), serial.size());
+        ImGui::InputText("Оператор", operatorName.data(), operatorName.size());
+        ImGui::InputTextMultiline("Примечание", notes.data(), notes.size());
+        if (ImGui::Button("Создать эксперимент")) {
+            ExperimentMetadata m{resin.data(), recipe.data(), reactor.data(), sensor.data(),
+                                 serial.data(), operatorName.data(), notes.data()};
+            deviceCommunicator_->beginExperiment(m);
+        }
+    } else {
+        if (!deviceCommunicator_->isRunning()) {
+            if (ImGui::Button("Начать регистрацию")) deviceCommunicator_->start();
+        } else if (ImGui::Button("Остановить регистрацию")) {
+            deviceCommunicator_->stop();
+        }
+        if (ImGui::Button("Завершить эксперимент")) deviceCommunicator_->finishExperiment();
+    }
+    ImGui::End();
+}
+
+void UI::ShowLaboratoryWindow() {
+    ImGui::Begin("Лабораторные пробы");
+    if (deviceCommunicator_->activeExperimentId() == 0) {
+        ImGui::TextUnformatted("Сначала создайте эксперимент.");
+        ImGui::End();
+        return;
+    }
+    if (ImGui::Button("Отобрать пробу")) deviceCommunicator_->collectLaboratorySample();
+    const auto rows = deviceCommunicator_->laboratorySamples();
+    static std::int64_t selectedId = 0;
+    static std::int64_t selectedExperiment = 0;
+    static bool hasAcid = false, hasViscosity = false, hasTemperature = false;
+    static double acid = 0.0, viscosity = 0.0, temperature = 0.0;
+    static std::array<char, 256> method{};
+    static std::array<char, 512> comment{};
+    if (selectedExperiment != deviceCommunicator_->activeExperimentId()) {
+        selectedExperiment = deviceCommunicator_->activeExperimentId();
+        selectedId = 0;
+    }
+    for (const auto& row : rows) {
+        const std::string label = "Проба №" + std::to_string(row.sampleNumber) + " | " + row.sampledAtUtc +
+                                  " | " + row.state + (row.valid ? "" : " | недостоверна");
+        if (ImGui::Selectable(label.c_str(), selectedId == row.id)) {
+            selectedId = row.id;
+            hasAcid = row.result.acidNumberMgKohG.has_value();
+            hasViscosity = row.result.conditionalViscositySeconds.has_value();
+            hasTemperature = row.result.analysisTemperatureC.has_value();
+            acid = row.result.acidNumberMgKohG.value_or(0.0);
+            viscosity = row.result.conditionalViscositySeconds.value_or(0.0);
+            temperature = row.result.analysisTemperatureC.value_or(0.0);
+            std::snprintf(method.data(), method.size(), "%s", row.result.methodInstrument.c_str());
+            std::snprintf(comment.data(), comment.size(), "%s", row.result.notes.c_str());
+        }
+    }
+    if (selectedId != 0) {
+        ImGui::Separator();
+        optionalInput("Кислотное число, мг KOH/г", hasAcid, acid);
+        optionalInput("Условная вязкость, с", hasViscosity, viscosity);
+        optionalInput("Температура анализа, °C", hasTemperature, temperature);
+        ImGui::InputText("Метод / прибор", method.data(), method.size());
+        ImGui::InputTextMultiline("Комментарий", comment.data(), comment.size());
+        const bool nonNegative = (!hasAcid || acid >= 0.0) && (!hasViscosity || viscosity >= 0.0) &&
+                                 (!hasTemperature || temperature >= 0.0);
+        ImGui::BeginDisabled(!nonNegative);
+        if (ImGui::Button("Сохранить результат")) {
+            LaboratoryResult r;
+            if (hasAcid) r.acidNumberMgKohG = acid;
+            if (hasViscosity) r.conditionalViscositySeconds = viscosity;
+            if (hasTemperature) r.analysisTemperatureC = temperature;
+            r.methodInstrument = method.data();
+            r.notes = comment.data();
+            deviceCommunicator_->enterLaboratoryResult(selectedId, r);
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Пометить недостоверной")) {
+            deviceCommunicator_->setLaboratorySampleValidity(selectedId, false);
+        }
+        if (!nonNegative) ImGui::TextColored({1, 0.2F, 0.2F, 1}, "Значения не могут быть отрицательными");
+    }
+    ImGui::End();
+}
+
+void UI::ShowMainDockspace() {
+    static bool showPortDialog = false;
+    static int selectedPort = 0;
+    static std::vector<std::string> ports = enumerateComPorts();
+    ImGuiWindowFlags flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking |
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    ImGui::Begin("MainDockSpace", nullptr, flags);
+    if (ImGui::BeginMenuBar()) {
+        if (ImGui::BeginMenu("Связь")) {
+            if (!deviceCommunicator_->isConnected()) {
+                if (ImGui::MenuItem("Подключить / переподключить")) {
+                    ports = enumerateComPorts(); selectedPort = 0; showPortDialog = true;
+                }
+            } else if (ImGui::MenuItem("Отключить")) {
+                deviceCommunicator_->disconnect();
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::EndMenuBar();
+    }
+    if (showPortDialog) { ImGui::OpenPopup("Выбор COM-порта"); showPortDialog = false; }
+    if (ImGui::BeginPopupModal("Выбор COM-порта", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Combo("Порт", &selectedPort, [](void* data, int index, const char** out) {
+            const auto& values = *static_cast<std::vector<std::string>*>(data);
+            if (index < 0 || static_cast<std::size_t>(index) >= values.size()) return false;
+            *out = values[static_cast<std::size_t>(index)].c_str(); return true;
+        }, &ports, static_cast<int>(ports.size()));
+        if (ImGui::Button("Подключить") && selectedPort >= 0 &&
+            static_cast<std::size_t>(selectedPort) < ports.size() &&
+            deviceCommunicator_->tryConnect(ports[static_cast<std::size_t>(selectedPort)])) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Отмена")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::DockSpace(ImGui::GetID("E730DockSpace"));
+    ImGui::End();
+}
+
+void UI::Render() {
+    ShowMainDockspace();
+    ShowDeviceControlWindow();
+    ShowExperimentWindow();
+    ShowLaboratoryWindow();
 }

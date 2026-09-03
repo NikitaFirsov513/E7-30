@@ -2,67 +2,92 @@
 
 #include "com/SerialPort.h"
 #include "device/E730Device.h"
+#include "storage/DataStore.h"
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <future>
+#include <memory>
+#include <mutex>
 #include <queue>
-#include "sqlite/sqlite3.h"
-
-
-struct Command {
-	std::vector<uint8_t> cmd;
-	bool needsResponse;
-	std::chrono::steady_clock::time_point timestamp;
-
-	Command(const std::vector<uint8_t> cmd, bool response = false)
-		: cmd(cmd), needsResponse(response), timestamp(std::chrono::steady_clock::now()) {
-	}
-};
+#include <string>
+#include <thread>
+#include <vector>
 
 class DeviceCommunicator {
-private:
-
-	SerialPort serialPort;
-
-	E730Device* device;
-
-	std::thread communicationThread;
-
-	std::atomic<bool> running{ false };
-
-	std::vector<DeviceResponse> dataList;
-
-	std::queue<Command> commandQueue;
-
-	std::mutex queueMutex;
-	std::condition_variable queueCondition;
-
-	std::chrono::steady_clock::time_point lastStatusRequest;
-	std::chrono::seconds STATUS_INTERVAL{ 1 };
-
-	sqlite3* db = nullptr;
-
 public:
+    explicit DeviceCommunicator(E730Device& device);
+    ~DeviceCommunicator();
+    DeviceCommunicator(const DeviceCommunicator&) = delete;
+    DeviceCommunicator& operator=(const DeviceCommunicator&) = delete;
 
-	DeviceCommunicator() : device(nullptr) {}
-	DeviceCommunicator(E730Device& dev) : device(&dev) {}
-	~DeviceCommunicator();
+    bool tryConnect(std::string portName);
+    void disconnect();
+    bool start();
+    void stop();
+    bool isRunning() const noexcept;
+    bool isConnected() const;
+    void sendCommand(std::vector<std::uint8_t> command);
+    void setFrequency(std::uint32_t frequency);
+    void resetDevice();
+    void setStatusInterval(int seconds);
+    void setStatusInterval(std::chrono::milliseconds interval);
+    DeviceStatus getLastData() const;
+    DeviceState getDeviceState() const;
+    DeviceState getDeviseState() const { return getDeviceState(); }
 
-	bool start();
-	bool tryConnect(std::string portName);
-	void stop();
-	void sendCommand(std::vector<uint8_t> cmd);
-	bool isConnected();
-	void setFrequency(uint32_t freq);
-	DeviceState getDeviseState();
+    bool openDB(std::string name = "E730_experiments.db");
+    std::int64_t beginExperiment(const ExperimentMetadata& metadata);
+    bool finishExperiment();
+    std::int64_t activeExperimentId() const noexcept;
+    std::int64_t collectLaboratorySample();
+    bool enterLaboratoryResult(std::int64_t sampleId, const LaboratoryResult& result);
+    bool setLaboratorySampleValidity(std::int64_t sampleId, bool valid);
+    std::vector<LaboratorySample> laboratorySamples() const;
+    bool addExperimentEvent(const std::string& type, const std::string& comment);
+    std::string storageError() const;
+    std::size_t bufferedMeasurementCount() const;
+    std::int64_t persistedMeasurementCount() const;
 
-	void setStatusInterval(int value);
-
-	bool openDB(std::string name = "TestDB.db");
-	bool writeDataToDb(const DeviceResponse& resp);
-	DeviceStatus getLastData() {
-		return device->getStatus();
-	};
-	void disconnect();
 private:
-	void communicationLoop();
-	void executeCommand(const Command& cmd);
-	void sendStatusRequest();
+    enum class QueueType { Connect, Disconnect, Command, StartRecording, StopRecording, Reschedule };
+    struct QueueItem {
+        QueueType type = QueueType::Command;
+        std::vector<std::uint8_t> bytes;
+        std::string portName;
+        std::size_t expectedLength = 0;
+        std::shared_ptr<std::promise<bool>> completion;
+    };
+
+    void ensureWorker();
+    bool enqueueAndWait(QueueItem item, std::chrono::milliseconds timeout);
+    void enqueue(QueueItem item);
+    void communicationLoop() noexcept;
+    void processQueueItem(QueueItem item);
+    void requestStatus();
+    void shutdownWorker() noexcept;
+
+    E730Device* device_;
+    SerialPort serialPort_; // Accessed only by communicationThread_.
+    std::thread communicationThread_;
+    std::atomic<bool> workerRunning_{false};
+    std::atomic<bool> recording_{false};
+    mutable std::mutex lifecycleMutex_;
+    mutable std::mutex queueMutex_;
+    std::condition_variable queueCondition_;
+    std::queue<QueueItem> commandQueue_;
+    std::atomic<std::int64_t> statusIntervalMs_{1000};
+    std::chrono::steady_clock::time_point nextStatusRequest_{};
+    mutable std::mutex historyMutex_;
+    std::deque<DeviceResponse> dataList_;
+    static constexpr std::size_t kMaxBufferedMeasurements = 1000;
+    DataStore dataStore_;
+    std::string databaseName_ = "E730_experiments.db";
+    std::atomic<std::int64_t> activeExperimentId_{0};
+    std::atomic<std::uint64_t> nextSequenceId_{1};
+    std::atomic<std::uint32_t> requestedFrequency_{0};
 };

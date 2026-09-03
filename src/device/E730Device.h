@@ -1,73 +1,59 @@
-﻿#pragma once
+#pragma once
 
-#include <string>
 #include <chrono>
+#include <cstdint>
 #include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
 
-enum class DeviceState {
-	CONNECTED,
-	RECORDING,
-	ERR,
-	DISCONNECTED
-};
+enum class DeviceState { CONNECTED, RECORDING, ERR, DISCONNECTED };
 
+// Field meaning and units are mode-dependent and intentionally stay neutral
+// until the manufacturer's E7-30 protocol documentation is available.
 struct DeviceResponse {
-	// Время опроса
-	std::chrono::system_clock::time_point timestamp;
-
-	// Флаги из ответа прибора
-	bool avp;          // бит 0 – АВП
-	bool overload;     // бит 2 – перегрузка
-	bool autoParam;    // бит 3 – авт. выбор параметра
-	bool scheme;       // бит 4 – схема замещения (1 – паралл., 0 – посл.)
-	bool done;         // бит 7 – цикл измерения завершён
-
-	// Остальные поля
-	uint8_t mode;      // параметр (F1–F4)
-	uint8_t slow;      // скорость измерения
-	uint8_t diap;      // диапазон измерения
-
-	int16_t offset;    // Uсм (смещение*10)
-	int32_t frequency; // частота (Гц)
-
-	float Z;           // модуль комплексного сопротивления |Z|
-	float phi;         // фазовый угол φ (радианы)
-
-
-	
+    std::uint64_t sequenceId = 0;
+    std::chrono::system_clock::time_point timestamp{};
+    std::chrono::system_clock::time_point receivedAt{};
+    std::uint32_t requestedFrequency = 0;
+    bool avp = false;
+    bool overload = false;
+    bool autoParameter = false;
+    bool scheme = false;
+    bool done = false;
+    bool valid = false;
+    std::uint8_t mode = 0;
+    std::uint8_t slow = 0;
+    std::uint8_t range = 0;
+    std::int16_t offset = 0;
+    std::int32_t returnedFrequency = 0;
+    float value1 = 0.0F;
+    float value2 = 0.0F;
+    std::vector<std::uint8_t> rawPacket;
+    std::string diagnostic;
 };
 
 struct DeviceStatus {
-	DeviceState state = DeviceState::DISCONNECTED;
-
-	DeviceResponse lastDeviceResponce;
-
-	std::string lastError;
+    DeviceState state = DeviceState::DISCONNECTED;
+    DeviceResponse lastDeviceResponse{};
+    std::chrono::system_clock::time_point lastSuccessfulResponse{};
+    std::string lastError;
 };
 
 class E730Device {
-
-private:
-	DeviceStatus status;
-	mutable std::mutex statusMutex;
-
-
 public:
-	void updateStatus(const std::string& response);
+    DeviceStatus getStatus() const;
+    void setState(DeviceState newState);
+    void setError(std::string error);
+    void clearError();
+    void setLastDeviceResponse(DeviceResponse response);
 
-	const DeviceStatus& getStatus() {
-		std::lock_guard<std::mutex> lock(statusMutex);
-		return status;
-	}
-
-	void setState(DeviceState newState);
-
-	void setError(const std::string& error);
-
-	void setLastDeviceResponce(DeviceResponse ldr);
+    // Compatibility with the original misspelled API.
+    void setLastDeviceResponce(DeviceResponse response) {
+        setLastDeviceResponse(std::move(response));
+    }
 
 private:
-	
-	void parseResponse(const std::string& response);
-
+    mutable std::mutex statusMutex_;
+    DeviceStatus status_{};
 };
