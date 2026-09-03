@@ -30,22 +30,22 @@
 #endif
 #include <glad/glad.h>
 #include <imgui_internal.h>
+#include "device/E730Device.h"
+#include "DeviceCommunicator.h"
+#include "ui/ui.h"
+#include <locale.h>
+
+E730Device device;
+DeviceCommunicator communicator{ device };
+UI ui{ communicator };
+
+std::atomic<bool> shouldClose{ false };
+
+
 
 static void glfw_error_callback(int error, const char* description)
 {
 	fprintf(stderr, "GLFW Error %d: %s\n", error, description);
-}
-void TextCentered(std::string text, int numHeightUnits) {
-
-	auto windowWidth = ImGui::GetWindowSize().x;
-	auto textWidth = ImGui::CalcTextSize(text.c_str()).x;
-	float frameHeight = ImGui::GetFrameHeight();
-	float myHeight = (numHeightUnits);
-	float delta = myHeight - frameHeight;
-	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 20.0f);
-	ImGui::SetCursorPosY(ImGui::GetCursorPosY() + delta * 0.5f);
-	ImGui::Text(text.c_str());
-
 }
 
 void ShowMainDockspace()
@@ -72,29 +72,42 @@ void ShowMainDockspace()
 	{
 		if (ImGui::BeginMenu("File"))
 		{
-			if (ImGui::MenuItem("New")) { /* TODO */ }
-			if (ImGui::MenuItem("Open", "Ctrl+O")) { /* TODO */ }
-			if (ImGui::MenuItem("Save", "Ctrl+S")) { /* TODO */ }
+
+			switch (communicator.getDeviseState()) {
+			case DeviceState::CONNECTED:
+				if (ImGui::MenuItem("Disconnect")) {
+					communicator.disconnect();
+				}
+				if (ImGui::MenuItem("Start record")) {
+					communicator.start();
+				}
+				if (ImGui::MenuItem("Stop record", nullptr, false, false)) {
+					communicator.stop();
+				}
+				break;
+			case DeviceState::RECORDING:
+				if (ImGui::MenuItem("Start record", nullptr, false, false)) {}
+				if (ImGui::MenuItem("Stop record")) {
+					communicator.stop();
+				}
+				break;
+			case DeviceState::ERR:
+				if (ImGui::MenuItem("Start record", nullptr, false, false)) {}
+				if (ImGui::MenuItem("Stop record", nullptr, false, false)) {}
+				break;
+			case DeviceState::DISCONNECTED:
+				if (ImGui::MenuItem("Start record", nullptr, false, false)) {}
+				if (ImGui::MenuItem("Stop record", nullptr, false, false)) {}
+				break;
+			default:
+				break;
+			}
+			if (ImGui::MenuItem("Save")) { /* TODO */ }
 			if (ImGui::MenuItem("Exit")) { /* TODO: set running = false, etc */ }
 			ImGui::EndMenu();
 		}
 
-		if (ImGui::BeginMenu("Edit"))
-		{
-			if (ImGui::MenuItem("Undo", "Ctrl+Z")) { /* TODO */ }
-			if (ImGui::MenuItem("Redo", "Ctrl+Y")) { /* TODO */ }
-			ImGui::Separator();
-			if (ImGui::MenuItem("Cut", "Ctrl+X")) { /* TODO */ }
-			if (ImGui::MenuItem("Copy", "Ctrl+C")) { /* TODO */ }
-			if (ImGui::MenuItem("Paste", "Ctrl+V")) { /* TODO */ }
-			ImGui::EndMenu();
-		}
 
-		if (ImGui::BeginMenu("Help"))
-		{
-			if (ImGui::MenuItem("About")) { /* TODO */ }
-			ImGui::EndMenu();
-		}
 
 		ImGui::EndMenuBar();
 	}
@@ -109,42 +122,23 @@ void ShowMainDockspace()
 // Main code
 int main(int, char**)
 {
+	setlocale(LC_ALL, "ru");
 	glfwSetErrorCallback(glfw_error_callback);
 	if (!glfwInit())
 		return 1;
 
 	// Decide GL+GLSL versions
-#if defined(IMGUI_IMPL_OPENGL_ES2)
-	// GL ES 2.0 + GLSL 100 (WebGL 1.0)
-	const char* glsl_version = "#version 100";
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-	glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
-#elif defined(IMGUI_IMPL_OPENGL_ES3)
-	// GL ES 3.0 + GLSL 300 es (WebGL 2.0)
-	const char* glsl_version = "#version 300 es";
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-	glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
-#elif defined(__APPLE__)
-	// GL 3.2 + GLSL 150
-	const char* glsl_version = "#version 150";
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);  // 3.2+ only
-	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // Required on Mac
-#else
+
 	// GL 3.0 + GLSL 130
 	const char* glsl_version = "#version 130";
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 	//glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);  // 3.2+ only
 	//glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // 3.0+ only
-#endif
 
 	// Create window with graphics context
 	float main_scale = 1; // Valid on GLFW 3.3+ only
-	GLFWwindow* window = glfwCreateWindow((int)(1280 * main_scale), (int)(800 * main_scale), "Dear ImGui GLFW+OpenGL3 example", nullptr, nullptr);
+	GLFWwindow* window = glfwCreateWindow((int)(500 * main_scale), (int)(800 * main_scale), "Dear ImGui GLFW+OpenGL3 example", nullptr, nullptr);
 	if (window == nullptr)
 		return 1;
 	glfwMakeContextCurrent(window);
@@ -216,7 +210,7 @@ int main(int, char**)
 	//IM_ASSERT(font != nullptr);
 
 	// Our state
-	bool show_demo_window = true;
+	bool show_demo_window = false;
 	bool show_another_window = false;
 	ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
@@ -248,268 +242,15 @@ int main(int, char**)
 		ImGui::NewFrame();
 
 
-		ShowMainDockspace();
-
+		//ShowMainDockspace();
+		ui.Render();
 
 		// 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
 		if (show_demo_window)
 			ImGui::ShowDemoWindow(&show_demo_window);
 
-		// 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
-	// Адаптивная таблица с минимальным размером
-		{
-			ImGui::Begin(u8"E7-30");
 
-			// Получаем размер окна для адаптивности
-			ImVec2 window_size = ImGui::GetContentRegionAvail();
-
-			// Минимальные размеры
-			float min_width = 900.0f;  // Минимальная ширина
-			float min_height = 400.0f; // Минимальная высота
-
-			// Используем максимум из минимального размера и текущего размера окна
-			float table_width = (min_width > window_size.x) ? min_width : window_size.x;
-			float table_height = (min_height > (window_size.y - 60.0f)) ? min_height : (window_size.y - 60.0f);
-
-			// Пропорциональное распределение колонок
-			float col1_ratio = 0.600f; // ~67% для первой колонки
-			float col2_ratio = 0.100f; // ~11% для второй колонки  
-			float col3_ratio = 0.300f; // ~22% для третьей колонки
-
-			float col1_width = table_width * col1_ratio;
-			float col2_width = table_width * col2_ratio;
-			float col3_width = table_width * col3_ratio;
-
-			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-			ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4, 4)); // Небольшие отступы для читаемости
-
-			// Основная таблица с флагами для адаптивности
-			if (ImGui::BeginTable("MainTable", 3,
-				ImGuiTableFlags_BordersH |
-				ImGuiTableFlags_BordersV |
-				ImGuiTableFlags_Resizable |
-				ImGuiTableFlags_SizingStretchProp)) {
-
-				// Настройка колонок с минимальными размерами
-				ImGui::TableSetupColumn("MainTable1", ImGuiTableColumnFlags_WidthStretch, col1_ratio, 400.0f);
-				ImGui::TableSetupColumn("MainTable2", ImGuiTableColumnFlags_WidthStretch, col2_ratio, 80.0f);
-				ImGui::TableSetupColumn("MainTable3", ImGuiTableColumnFlags_WidthStretch, col3_ratio, 160.0f);
-
-				ImGui::TableNextRow(ImGuiTableRowFlags_None, table_height);
-				ImGui::TableNextColumn();
-
-				// Первая колонка - вложенная таблица
-				if (ImGui::BeginTable("InnerTable", 2,
-					ImGuiTableFlags_Borders |
-					ImGuiTableFlags_SizingStretchProp)) {
-
-					float inner_col1_width = col1_width * 0.833f; // ~83% от первой колонки
-					float inner_col2_width = col1_width * 0.167f; // ~17% от первой колонки
-
-					ImGui::TableSetupColumn("InnerCol1", ImGuiTableColumnFlags_WidthStretch, 0.833f, inner_col1_width);
-					ImGui::TableSetupColumn("InnerCol2", ImGuiTableColumnFlags_WidthStretch, 0.167f, inner_col2_width);
-
-					ImGui::TableNextColumn();
-
-					// Левая часть вложенной таблицы
-					if (ImGui::BeginTable("LeftInnerTable", 1,
-						ImGuiTableFlags_Borders |
-						ImGuiTableFlags_SizingStretchProp)) {
-
-						float row1_height = table_height * 0.075f; // ~7.5%
-						float row2_height = table_height * 0.775f; // ~77.5%
-						float row3_height = table_height * 0.15f;  // ~15%
-
-						ImGui::TableNextRow(ImGuiTableRowFlags_None, row1_height);
-						ImGui::TableNextColumn();
-						TextCentered("ZAGOLOVOK", row1_height);
-						//ImGui::Text("ZAGOLOVOK");
-
-						ImGui::TableNextRow(ImGuiTableRowFlags_None, row2_height);
-						ImGui::TableNextColumn();
-
-
-
-						if (ImGui::BeginTable("MainInfoTable", 1,
-							ImGuiTableFlags_Borders |
-							ImGuiTableFlags_SizingStretchProp)) {
-
-
-							ImGui::TableNextRow(ImGuiTableRowFlags_None, row2_height / 3);
-							ImGui::TableNextColumn();
-							TextCentered("VAL 1", row2_height / 3);
-
-							//ImGui::Text("VAL 1");
-
-							ImGui::TableNextRow(ImGuiTableRowFlags_None, row2_height / 3);
-							ImGui::TableNextColumn();
-							TextCentered("VAL 2", row2_height / 3);
-
-							//ImGui::Text("VAL 2");
-
-							ImGui::TableNextRow(ImGuiTableRowFlags_None, row2_height / 3);
-							ImGui::TableNextColumn();
-
-							if (ImGui::BeginTable("AllVarTable", 2,
-								ImGuiTableFlags_Borders |
-								ImGuiTableFlags_SizingStretchProp)) {
-
-
-								ImGui::TableSetupColumn("AllVarTable1", ImGuiTableColumnFlags_WidthStretch, inner_col1_width / 2);
-								ImGui::TableSetupColumn("AllVarTable2", ImGuiTableColumnFlags_WidthStretch, inner_col1_width / 2);
-
-
-								ImGui::TableNextRow(ImGuiTableRowFlags_None, 55.0f);
-								ImGui::TableNextColumn();
-								//ImGui::Text("Z");
-								TextCentered("Z",55.0f);
-
-								ImGui::TableNextColumn();
-								//ImGui::Text("Fi");
-								TextCentered("Fi", 55.0f);
-
-								ImGui::TableNextRow(ImGuiTableRowFlags_None, 55.0f);
-								ImGui::TableNextColumn();
-								//ImGui::Text("X");
-								TextCentered("X", 55.0f);
-
-								ImGui::TableNextColumn();
-								//ImGui::Text("R");
-								TextCentered("R", 55.0f);
-
-								ImGui::EndTable();
-
-							}
-						}
-
-
-						ImGui::EndTable();
-
-
-						ImGui::TableNextRow(ImGuiTableRowFlags_None, row3_height);
-						ImGui::TableNextColumn();
-						if (ImGui::BeginTable("AllVarTable", 2,
-							ImGuiTableFlags_Borders |
-							ImGuiTableFlags_SizingStretchProp)) {
-
-
-							ImGui::TableSetupColumn("AllVarTable1", ImGuiTableColumnFlags_WidthStretch, inner_col1_width / 2);
-							ImGui::TableSetupColumn("AllVarTable2", ImGuiTableColumnFlags_WidthStretch, inner_col1_width / 2);
-
-
-							ImGui::TableNextRow(ImGuiTableRowFlags_None, 40.0f);
-							ImGui::TableNextColumn();
-							//ImGui::Text("Z");
-							TextCentered("5", 40.0f);
-
-							ImGui::TableNextColumn();
-							//ImGui::Text("Fi");
-							TextCentered("7", 40.0f);
-
-							ImGui::TableNextRow(ImGuiTableRowFlags_None, 40.0f);
-							ImGui::TableNextColumn();
-							//ImGui::Text("X");
-							TextCentered("6", 40.0f);
-
-							ImGui::TableNextColumn();
-							//ImGui::Text("R");
-							TextCentered("8", 40.0f);
-
-							ImGui::EndTable();
-
-						}
-						ImGui::EndTable();
-					}
-
-					ImGui::TableNextColumn();
-
-					// Правая часть вложенной таблицы
-					if (ImGui::BeginTable("RightInnerTable", 1,
-						ImGuiTableFlags_Borders |
-						ImGuiTableFlags_SizingStretchProp)) {
-
-						float cell_height = table_height * 0.2f; // Равномерное распределение
-
-						for (int i = 0; i < 5; i++) {
-							ImGui::TableNextRow(ImGuiTableRowFlags_None, cell_height);
-							ImGui::TableNextColumn();
-							ImGui::Text("5%d", i + 1);
-						}
-
-						ImGui::EndTable();
-					}
-					ImGui::EndTable();
-				}
-
-				ImGui::TableNextColumn();
-
-				// Вторая колонка
-				if (ImGui::BeginTable("MiddleTable", 1,
-					ImGuiTableFlags_Borders |
-					ImGuiTableFlags_SizingStretchProp)) {
-
-					float cell_height = table_height * 0.2f;
-
-					for (int i = 0; i < 5; i++) {
-						ImGui::TableNextRow(ImGuiTableRowFlags_None, cell_height);
-						ImGui::TableNextColumn();
-						if (i < 4) {
-							ImGui::Text("6%d", i + 1);
-						}
-					}
-
-					ImGui::EndTable();
-				}
-
-				ImGui::TableNextColumn();
-
-				// Третья колонка с центрированием
-				float available_height = ImGui::GetContentRegionAvail().y;
-				float inner_table_height = 4 * 80.0f;
-				float vertical_offset = ((available_height - inner_table_height) * 0.5f > 0.0f) ?
-					(available_height - inner_table_height) * 0.5f : 0.0f;
-
-				ImGui::SetCursorPosY(ImGui::GetCursorPosY() + vertical_offset);
-
-				if (ImGui::BeginTable("RightTable", 4,
-					ImGuiTableFlags_Borders |
-					ImGuiTableFlags_SizingStretchProp)) {
-
-					float cell_width = col3_width * 0.25f; // Равномерное распределение
-
-					for (int col = 0; col < 4; col++) {
-						ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch, 0.25f, cell_width);
-					}
-
-					// Создаем строки с данными
-					const char* data[4][4] = {
-						{"31", "32", "33", "34"},
-						{"35", "36", "37", "38"},
-						{"39", "310", "311", "312"},
-						{"313", "314", "315", "316"}
-					};
-
-					for (int row = 0; row < 4; row++) {
-						ImGui::TableNextRow(ImGuiTableRowFlags_None, 80);
-						for (int col = 0; col < 4; col++) {
-							ImGui::TableNextColumn();
-							ImGui::Text("%s", data[row][col]);
-						}
-					}
-
-					ImGui::EndTable();
-				}
-
-				ImGui::EndTable();
-			}
-
-			ImGui::PopStyleVar(2);
-
-			// Устанавливаем минимальный размер окна
-
-			ImGui::End();
-		}
-		// 3. Show another simple window.
+		//// 3. Show another simple window.
 		if (show_another_window)
 		{
 			ImGui::Begin("Another Window", &show_another_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)

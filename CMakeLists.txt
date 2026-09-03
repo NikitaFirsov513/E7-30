@@ -1,5 +1,21 @@
 cmake_minimum_required(VERSION 3.30)
 
+# Устанавливаем стандарт
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Включаем отладочную информацию
+if(MSVC)
+    # Для Debug сборки
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MDd /Zi /Ob0 /Od /RTC1")
+
+    # Для Release сборки
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD /O2 /DNDEBUG")
+
+    # Опционально: для Edit & Continue (если нужно)
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /ZI")
+endif()
+
 project(E7-30-Control)
 
 include_directories(${PROJECT_SOURCE_DIR}/libs/imgui)
@@ -30,6 +46,12 @@ add_executable(E7-30-Control
 
     ${PROJECT_SOURCE_DIR}/src/DeviceCommunicator.h           
     ${PROJECT_SOURCE_DIR}/src/DeviceCommunicator.cpp
+
+    ${PROJECT_SOURCE_DIR}/src/sqlite/sqlite3.c           
+    ${PROJECT_SOURCE_DIR}/src/sqlite/sqlite3.h
+
+    ${PROJECT_SOURCE_DIR}/src/ui/ui.cpp           
+    ${PROJECT_SOURCE_DIR}/src/ui/ui.h
 
 
     ${PROJECT_SOURCE_DIR}/src/imgui/imgui.cpp

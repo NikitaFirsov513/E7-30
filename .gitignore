@@ -1,1 +1,7 @@
 /build
+/out
+*.zip
+*.7z
+*.rar
+*.exe
+*.vs
